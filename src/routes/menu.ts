@@ -66,3 +66,55 @@ menu.post('/mop-post', async (c) => {
     200
   );
 });
+
+menu.post('/vg-review-queue', async (_c) => {
+  return _c.json<UiResponse>({
+    showForm: {
+      name: 'vgReviewQueue',
+      form: {
+        title: 'Vibe Guard: Review Queue',
+        fields: [],
+        acceptLabel: 'Load Queue',
+        cancelLabel: 'Close',
+      },
+    },
+  });
+});
+
+menu.post('/vg-settings', async (_c) => {
+  return _c.json<UiResponse>({
+    showForm: {
+      name: 'vgSettings',
+      form: {
+        title: 'Vibe Guard: Settings',
+        fields: [],
+        acceptLabel: 'Show',
+        cancelLabel: 'Close',
+      },
+    },
+  });
+});
+
+menu.post('/vg-restore-comment', async (c) => {
+  const request = await c.req.json<MenuItemRequest>();
+  return c.json<UiResponse>({
+    showForm: {
+      name: 'vgRestoreComment',
+      form: {
+        title: 'Vibe Guard: Restore Comment',
+        description: 'Approve this comment and remove it from the Vibe Guard queue?',
+        fields: [
+          {
+            name: 'commentId',
+            label: 'Comment ID',
+            type: 'string',
+            defaultValue: request.targetId,
+            required: true,
+          },
+        ],
+        acceptLabel: 'Restore',
+        cancelLabel: 'Cancel',
+      },
+    },
+  });
+});

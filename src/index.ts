@@ -5,6 +5,38 @@ import { api } from './routes/api';
 import { forms } from './routes/forms';
 import { menu } from './routes/menu';
 import { triggers } from './routes/triggers';
+import { Devvit } from '@devvit/public-api';
+
+Devvit.addSettings([
+  {
+    name: 'open-ai-api-key',
+    label: 'OpenAI API Key',
+    type: 'string',
+    isSecret: true,
+    scope: 'app',
+  },
+  {
+    name: 'auto-remove-threshold',
+    label: 'Auto-Remove Score Threshold (0–1)',
+    type: 'number',
+    scope: 'installation',
+    defaultValue: 0.7,
+  },
+  {
+    name: 'flag-review-threshold',
+    label: 'Flag-for-Review Score Threshold (0–1)',
+    type: 'number',
+    scope: 'installation',
+    defaultValue: 0.5,
+  },
+  {
+    name: 'notify-modmail',
+    label: 'Send Modmail Notifications',
+    type: 'boolean',
+    scope: 'installation',
+    defaultValue: true,
+  },
+]);
 
 const app = new Hono();
 const internal = new Hono();

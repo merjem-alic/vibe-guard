@@ -20,12 +20,36 @@
         "location": "post",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/mop-post"
+      },
+      {
+        "label": "Vibe Guard: Review Queue",
+        "description": "View AI-flagged comments and moderation stats.",
+        "location": "post",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/vg-review-queue"
+      },
+      {
+        "label": "Vibe Guard: Settings",
+        "description": "View current Vibe Guard configuration.",
+        "location": "post",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/vg-settings"
+      },
+      {
+        "label": "Vibe Guard: Restore Comment",
+        "description": "Approve this comment and remove it from the Vibe Guard queue.",
+        "location": "comment",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/vg-restore-comment"
       }
     ]
   },
   "forms": {
     "mopComment": "/internal/form/mop-comment-submit",
-    "mopPost": "/internal/form/mop-post-submit"
+    "mopPost": "/internal/form/mop-post-submit",
+    "vgReviewQueue": "/internal/form/vg-review-queue-submit",
+    "vgSettings": "/internal/form/vg-settings-submit",
+    "vgRestoreComment": "/internal/form/vg-restore-comment-submit"
   },
   "triggers": {
     "onAppInstall": "/internal/triggers/on-app-install",
