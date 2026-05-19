@@ -9,6 +9,7 @@ import {
   updateFlaggedStatus,
   adjustPendingCount,
   getFlaggedItem,
+  getAuthorViolationCount,
 } from '../core/flaggedStore';
 
 type NukeFormValues = {
@@ -211,21 +212,27 @@ forms.post('/vg-restore-comment-submit', async (c) => {
   const values = await c.req.json<{ commentId?: string }>();
   const commentId = values.commentId?.trim();
 
-  if (!commentId || !isT1(commentId)) {
-    return c.json<UiResponse>({ showToast: 'Invalid comment ID.' });
+  if (!commentId || (!isT1(commentId) && !isT3(commentId))) {
+    return c.json<UiResponse>({ showToast: 'Invalid content ID.' });
   }
 
   try {
-    const redditComment = await reddit.getCommentById(commentId as `t1_${string}`);
-    await redditComment.approve();
+    if (isT1(commentId)) {
+      const redditComment = await reddit.getCommentById(commentId as `t1_${string}`);
+      await redditComment.approve();
+    } else {
+      const redditPost = await reddit.getPostById(commentId as `t3_${string}`);
+      await redditPost.approve();
+    }
     await updateFlaggedStatus(commentId, 'restored');
     await adjustPendingCount(-1);
 
-    console.log(`[Vibe Guard] Comment ${commentId} restored by mod u/${context.userId}`);
-    return c.json<UiResponse>({ showToast: 'Comment restored successfully.' });
+    const label = isT3(commentId) ? 'Post' : 'Comment';
+    console.log(`[Vibe Guard] ${label} ${commentId} restored by mod u/${context.userId}`);
+    return c.json<UiResponse>({ showToast: `${label} approved and removed from queue.` });
   } catch (err) {
-    console.error('[Vibe Guard] Restore comment error:', err);
-    return c.json<UiResponse>({ showToast: 'Failed to restore comment. Please try again.' });
+    console.error('[Vibe Guard] Restore error:', err);
+    return c.json<UiResponse>({ showToast: 'Failed to restore. Please try again.' });
   }
 });
 
@@ -233,39 +240,48 @@ forms.post('/vg-confirm-removal-submit', async (c) => {
   const values = await c.req.json<{ commentId?: string }>();
   const commentId = values.commentId?.trim();
 
-  if (!commentId || !isT1(commentId)) {
-    return c.json<UiResponse>({ showToast: 'Invalid comment ID.' });
+  if (!commentId || (!isT1(commentId) && !isT3(commentId))) {
+    return c.json<UiResponse>({ showToast: 'Invalid content ID.' });
   }
 
   try {
     const flaggedItem = await getFlaggedItem(commentId);
     if (!flaggedItem) {
-      return c.json<UiResponse>({ showToast: 'Comment not found in review queue.' });
+      return c.json<UiResponse>({ showToast: 'Item not found in review queue.' });
     }
     if (flaggedItem.status !== 'pending') {
       return c.json<UiResponse>({
-        showToast: `Cannot confirm: comment status is already "${flaggedItem.status}".`,
+        showToast: `Cannot confirm: status is already "${flaggedItem.status}".`,
       });
     }
 
-    const redditComment = await reddit.getCommentById(commentId as `t1_${string}`);
-    await redditComment.remove();
+    if (isT1(commentId)) {
+      const redditComment = await reddit.getCommentById(commentId as `t1_${string}`);
+      await redditComment.remove();
+    } else {
+      const redditPost = await reddit.getPostById(commentId as `t3_${string}`);
+      await redditPost.remove();
+    }
     await updateFlaggedStatus(commentId, 'confirmed');
     await adjustPendingCount(-1);
 
+    const label = isT3(commentId) ? 'post' : 'comment';
     const subredditId = context.subredditId;
     if (subredditId && flaggedItem.authorName) {
       await reddit.addModNote({
         subreddit: context.subredditName,
         user: flaggedItem.authorName,
-        note: `Vibe Guard: mod confirmed removal of flagged ${flaggedItem.category} comment`,
+        note: `Vibe Guard: mod confirmed removal of flagged ${flaggedItem.category} ${label}`,
         label: 'SPAM_WARNING',
-        redditId: commentId as `t1_${string}`,
+        redditId: isT3(commentId) ? (commentId as `t3_${string}`) : (commentId as `t1_${string}`),
       });
     }
 
-    console.log(`[Vibe Guard] Comment ${commentId} confirmed removal by mod u/${context.userId}`);
-    return c.json<UiResponse>({ showToast: 'Comment confirmed and removed.' });
+    const violationCount = await getAuthorViolationCount(flaggedItem.authorName);
+    console.log(`[Vibe Guard] ${label} ${commentId} confirmed removal by mod u/${context.userId}`);
+    return c.json<UiResponse>({
+      showToast: `Removed. u/${flaggedItem.authorName} has ${violationCount} flagged item${violationCount !== 1 ? 's' : ''} on record.`,
+    });
   } catch (err) {
     console.error('[Vibe Guard] Confirm removal error:', err);
     return c.json<UiResponse>({ showToast: 'Failed to confirm removal. Please try again.' });

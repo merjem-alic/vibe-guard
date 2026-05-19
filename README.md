@@ -19,12 +19,16 @@ An AI-powered Reddit moderation tool built with [Devvit](https://developers.redd
 ### Manual Moderation Tools
 - **Mop comment** — remove and/or lock a comment and all its replies in one click
 - **Mop post** — remove and/or lock every comment on a post at once
-- **Restore Comment** — approve a Vibe Guard–flagged comment directly from the comment context menu
-- **Confirm Removal** — mod confirms a FLAG_FOR_REVIEW comment should be removed, closing it from the queue
+- **Restore** — approve a Vibe Guard–flagged comment or post directly from the review queue; works for both T1 and T3 IDs
+- **Confirm Removal** — mod confirms a FLAG_FOR_REVIEW comment or post should be removed; toast shows the author's total violation count
 
 ### Mod Dashboard (native Reddit UI)
 - **Review Queue** — accessible from any post; shows total processed / auto-removed / pending counts and the last 5 flagged items with full context (author, category, confidence, status, body snippet, permalink)
 - **Settings** — view current threshold and category configuration without leaving Reddit
+
+### Safe Deployment Features
+- **Dry-run mode** — when enabled, AUTO_REMOVE decisions are stored as pending in the queue (no content is actually removed); modmail is sent with a `[DRY RUN]` prefix so mods can calibrate thresholds against live traffic before enabling enforcement
+- **Trusted user allowlist** — comma-separated list of usernames that bypass all AI screening entirely; avoids false positives on established community members and moderators
 
 ### Persistence & Auditability
 - All flagged items stored in Redis with full metadata: author, body, category, score, tier, status, content type, permalink, and timestamp
@@ -127,6 +131,8 @@ After deploying, subreddit moderators can configure Vibe Guard from the subreddi
 | Flag-for-Review Threshold | `0.5` | Confidence score above which any flagged content is queued for mod review. |
 | Modmail Notifications | `true` | Send a modmail to the mod team on every auto-removal and flag. |
 | Auto-Remove Categories | `sexual/minors,...` | Comma-separated list of OpenAI categories that trigger auto-removal. Overrides the default set. |
+| Dry-Run Mode | `false` | When enabled, AUTO_REMOVE decisions are logged and queued for review but content is not removed. Use to calibrate thresholds before going live. |
+| Trusted Users | — | Comma-separated list of usernames that bypass AI screening entirely. |
 
 ## How It Works
 

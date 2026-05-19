@@ -21,6 +21,8 @@ import {
   incrementAuthorViolations,
   getDailyStats,
   getStats,
+  getSchedulerLock,
+  setSchedulerLock,
 } from '../core/flaggedStore';
 
 export const triggers = new Hono();
@@ -48,10 +50,16 @@ triggers.post('/on-app-install', async (c) => {
       console.log(`[Vibe Guard] Removal reason already exists: ${existing}`);
     }
 
-    // Schedule weekly digest (Monday 9am UTC)
+    // Schedule weekly digest (Monday 9am UTC) — Redis lock prevents duplicates on reinstall
     try {
-      await scheduler.runJob({ name: 'weekly-digest', cron: '0 9 * * 1' });
-      console.log('[Vibe Guard] Weekly digest scheduled');
+      const alreadyScheduled = await getSchedulerLock();
+      if (!alreadyScheduled) {
+        await scheduler.runJob({ name: 'weekly-digest', cron: '0 9 * * 1' });
+        await setSchedulerLock();
+        console.log('[Vibe Guard] Weekly digest scheduled');
+      } else {
+        console.log('[Vibe Guard] Weekly digest already scheduled, skipping');
+      }
     } catch (schedErr) {
       console.warn('[Vibe Guard] Could not schedule weekly digest:', schedErr);
     }
@@ -74,14 +82,25 @@ triggers.post('/on-comment-create', async (c) => {
   console.log(`[Vibe Guard] Evaluating comment ${comment.id} from u/${comment.author}`);
 
   try {
-    const [apiKey, autoRemoveThreshold, flagReviewThreshold, notifyModmail, autoRemoveCategoriesCsv] =
+    const [apiKey, autoRemoveThreshold, flagReviewThreshold, notifyModmail, autoRemoveCategoriesCsv, trustedUsersCsv, isDryRun] =
       await Promise.all([
         settings.get<string>('open-ai-api-key'),
         settings.get<number>('auto-remove-threshold'),
         settings.get<number>('flag-review-threshold'),
         settings.get<boolean>('notify-modmail'),
         settings.get<string>('auto-remove-categories'),
+        settings.get<string>('trusted-users'),
+        settings.get<boolean>('dry-run-mode'),
       ]);
+
+    // Trusted user bypass
+    const trustedUsers = new Set(
+      (trustedUsersCsv ?? '').split(',').map((u) => u.trim().toLowerCase()).filter(Boolean),
+    );
+    if (trustedUsers.has(comment.author.toLowerCase())) {
+      console.log(`[Vibe Guard] Skipping trusted user u/${comment.author}`);
+      return c.json<TriggerResponse>({ status: 'ok' });
+    }
 
     const resolvedApiKey = apiKey ?? process.env.OPEN_API_KEY;
     if (!resolvedApiKey) {
@@ -112,7 +131,7 @@ triggers.post('/on-comment-create', async (c) => {
     );
 
     console.log(
-      `[Vibe Guard] Comment ${comment.id} → ${tier} (${triggerCategory} @ ${score.toFixed(3)})`,
+      `[Vibe Guard] Comment ${comment.id} → ${tier} (${triggerCategory} @ ${score.toFixed(3)})${isDryRun ? ' [DRY RUN]' : ''}`,
     );
 
     if (tier === 'IGNORE') {
@@ -132,7 +151,7 @@ triggers.post('/on-comment-create', async (c) => {
       category: triggerCategory,
       score: score.toFixed(4),
       tier,
-      status: tier === 'AUTO_REMOVE' ? 'auto-removed' : 'pending',
+      status: tier === 'AUTO_REMOVE' && !isDryRun ? 'auto-removed' : 'pending',
       flaggedAt: new Date().toISOString(),
       contentType: 'comment',
     });
@@ -142,30 +161,38 @@ triggers.post('/on-comment-create', async (c) => {
     const isRepeatOffender = violationCount >= 3;
 
     if (tier === 'AUTO_REMOVE') {
-      const redditComment = await reddit.getCommentById(comment.id as `t1_${string}`);
-      await redditComment.remove();
-      await incrementStat('statsAutoRemoved');
+      if (!isDryRun) {
+        const redditComment = await reddit.getCommentById(comment.id as `t1_${string}`);
+        await redditComment.remove();
+        await incrementStat('statsAutoRemoved');
 
-      const reasonId = await getRemovalReasonId();
-      if (reasonId) {
-        await redditComment.addRemovalNote({
-          reasonId,
-          modNote: `Vibe Guard: ${triggerCategory} (${score.toFixed(2)})${isRepeatOffender ? ` [REPEAT OFFENDER ×${violationCount}]` : ''}`,
-        });
-      }
+        const reasonId = await getRemovalReasonId();
+        if (reasonId) {
+          await redditComment.addRemovalNote({
+            reasonId,
+            modNote: `Vibe Guard: ${triggerCategory} (${score.toFixed(2)})${isRepeatOffender ? ` [REPEAT OFFENDER ×${violationCount}]` : ''}`,
+          });
+        }
 
-      if (subredditName) {
-        await reddit.addModNote({
-          subreddit: subredditName,
-          user: authorName,
-          note: `Vibe Guard auto-removed comment for ${triggerCategory} (score: ${score.toFixed(2)})${isRepeatOffender ? ` [violation #${violationCount}]` : ''}`,
-          label: 'SPAM_WARNING',
-          redditId: comment.id as `t1_${string}`,
-        });
-      }
+        if (subredditName) {
+          await reddit.addModNote({
+            subreddit: subredditName,
+            user: authorName,
+            note: `Vibe Guard auto-removed comment for ${triggerCategory} (score: ${score.toFixed(2)})${isRepeatOffender ? ` [violation #${violationCount}]` : ''}`,
+            label: 'SPAM_WARNING',
+            redditId: comment.id as `t1_${string}`,
+          });
+        }
 
-      if (notifyModmail !== false && subredditId) {
-        await sendModmail(subredditId, 'AUTO_REMOVE', authorName, comment.body, triggerCategory, score, permalink, violationCount);
+        if (notifyModmail !== false && subredditId) {
+          await sendModmail(subredditId, 'AUTO_REMOVE', authorName, comment.body, triggerCategory, score, permalink, violationCount);
+        }
+      } else {
+        // Dry-run: store as pending so mods can review, no actual removal
+        await adjustPendingCount(1);
+        if (notifyModmail !== false && subredditId) {
+          await sendModmail(subredditId, 'AUTO_REMOVE', authorName, comment.body, triggerCategory, score, permalink, violationCount, 'comment', true);
+        }
       }
     } else {
       await adjustPendingCount(1);
@@ -198,14 +225,26 @@ triggers.post('/on-post-submit', async (c) => {
   console.log(`[Vibe Guard] Evaluating post ${post.id} by u/${input.author?.name}`);
 
   try {
-    const [apiKey, autoRemoveThreshold, flagReviewThreshold, notifyModmail, autoRemoveCategoriesCsv] =
+    const [apiKey, autoRemoveThreshold, flagReviewThreshold, notifyModmail, autoRemoveCategoriesCsv, trustedUsersCsv, isDryRun] =
       await Promise.all([
         settings.get<string>('open-ai-api-key'),
         settings.get<number>('auto-remove-threshold'),
         settings.get<number>('flag-review-threshold'),
         settings.get<boolean>('notify-modmail'),
         settings.get<string>('auto-remove-categories'),
+        settings.get<string>('trusted-users'),
+        settings.get<boolean>('dry-run-mode'),
       ]);
+
+    // Trusted user bypass
+    const authorName = input.author?.name ?? 'unknown';
+    const trustedUsers = new Set(
+      (trustedUsersCsv ?? '').split(',').map((u) => u.trim().toLowerCase()).filter(Boolean),
+    );
+    if (trustedUsers.has(authorName.toLowerCase())) {
+      console.log(`[Vibe Guard] Skipping trusted user u/${authorName}`);
+      return c.json<TriggerResponse>({ status: 'ok' });
+    }
 
     const resolvedApiKey = apiKey ?? process.env.OPEN_API_KEY;
     if (!resolvedApiKey) {
@@ -233,13 +272,12 @@ triggers.post('/on-post-submit', async (c) => {
       autoRemoveCategories,
     );
 
-    console.log(`[Vibe Guard] Post ${post.id} → ${tier} (${triggerCategory} @ ${score.toFixed(3)})`);
+    console.log(`[Vibe Guard] Post ${post.id} → ${tier} (${triggerCategory} @ ${score.toFixed(3)})${isDryRun ? ' [DRY RUN]' : ''}`);
 
     if (tier === 'IGNORE') return c.json<TriggerResponse>({ status: 'ok' });
 
     const subredditName = subreddit?.name ?? '';
     const subredditId = (subreddit?.id ?? '') as `t5_${string}`;
-    const authorName = input.author?.name ?? 'unknown';
     const permalink = post.permalink;
 
     await storeFlaggedItem({
@@ -250,7 +288,7 @@ triggers.post('/on-post-submit', async (c) => {
       category: triggerCategory,
       score: score.toFixed(4),
       tier,
-      status: tier === 'AUTO_REMOVE' ? 'auto-removed' : 'pending',
+      status: tier === 'AUTO_REMOVE' && !isDryRun ? 'auto-removed' : 'pending',
       flaggedAt: new Date().toISOString(),
       contentType: 'post',
     });
@@ -259,22 +297,30 @@ triggers.post('/on-post-submit', async (c) => {
     const isRepeatOffender = violationCount >= 3;
 
     if (tier === 'AUTO_REMOVE') {
-      const redditPost = await reddit.getPostById(post.id as `t3_${string}`);
-      await redditPost.remove();
-      await incrementStat('statsAutoRemoved');
+      if (!isDryRun) {
+        const redditPost = await reddit.getPostById(post.id as `t3_${string}`);
+        await redditPost.remove();
+        await incrementStat('statsAutoRemoved');
 
-      if (subredditName) {
-        await reddit.addModNote({
-          subreddit: subredditName,
-          user: authorName,
-          note: `Vibe Guard auto-removed a post for ${triggerCategory} (score: ${score.toFixed(2)})${isRepeatOffender ? ` [violation #${violationCount}]` : ''}`,
-          label: 'SPAM_WARNING',
-          redditId: post.id as `t3_${string}`,
-        });
-      }
+        if (subredditName) {
+          await reddit.addModNote({
+            subreddit: subredditName,
+            user: authorName,
+            note: `Vibe Guard auto-removed a post for ${triggerCategory} (score: ${score.toFixed(2)})${isRepeatOffender ? ` [violation #${violationCount}]` : ''}`,
+            label: 'SPAM_WARNING',
+            redditId: post.id as `t3_${string}`,
+          });
+        }
 
-      if (notifyModmail !== false && subredditId) {
-        await sendModmail(subredditId, 'AUTO_REMOVE', authorName, textToScreen, triggerCategory, score, permalink, violationCount, 'post');
+        if (notifyModmail !== false && subredditId) {
+          await sendModmail(subredditId, 'AUTO_REMOVE', authorName, textToScreen, triggerCategory, score, permalink, violationCount, 'post');
+        }
+      } else {
+        // Dry-run: store as pending so mods can review, no actual removal
+        await adjustPendingCount(1);
+        if (notifyModmail !== false && subredditId) {
+          await sendModmail(subredditId, 'AUTO_REMOVE', authorName, textToScreen, triggerCategory, score, permalink, violationCount, 'post', true);
+        }
       }
     } else {
       await adjustPendingCount(1);
@@ -341,6 +387,8 @@ triggers.post('/on-comment-report', async (c) => {
     console.log(`[Vibe Guard] Re-screened reported comment ${comment.id} → ${tier}`);
 
     if (tier === 'IGNORE') return c.json<TriggerResponse>({ status: 'ok' });
+
+    await incrementStat('statsProcessed');
 
     const subredditId = (subreddit?.id ?? '') as `t5_${string}`;
     const authorName = comment.author;
@@ -472,11 +520,13 @@ async function sendModmail(
   permalink: string,
   violationCount: number,
   contentType: 'comment' | 'post' = 'comment',
+  dryRun = false,
 ): Promise<void> {
   const contentLabel = contentType === 'post' ? 'Post' : 'Comment';
+  const dryRunPrefix = dryRun ? '[DRY RUN] ' : '';
   const subject =
     action === 'AUTO_REMOVE'
-      ? `[Vibe Guard] ${contentLabel} auto-removed`
+      ? `${dryRunPrefix}[Vibe Guard] ${contentLabel} auto-removed`
       : `[Vibe Guard] ${contentLabel} flagged for review`;
 
   const repeatWarning = violationCount >= 3 ? `\n**Repeat offender:** violation #${violationCount}` : '';

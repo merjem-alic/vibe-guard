@@ -43,6 +43,20 @@ Devvit.addSettings([
     scope: 'installation',
     defaultValue: 'sexual/minors,hate/threatening,violence/graphic,self-harm/instructions,self-harm/intent',
   },
+  {
+    name: 'dry-run-mode',
+    label: 'Dry-Run Mode (log only, no removals)',
+    type: 'boolean',
+    scope: 'installation',
+    defaultValue: false,
+  },
+  {
+    name: 'trusted-users',
+    label: 'Trusted Users (comma-separated, bypass screening)',
+    type: 'string',
+    scope: 'installation',
+    defaultValue: '',
+  },
 ]);
 
 

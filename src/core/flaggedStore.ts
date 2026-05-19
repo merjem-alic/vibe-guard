@@ -2,6 +2,7 @@ import { redis } from '@devvit/web/server';
 
 export const KEYS = {
   removalReasonId: 'vg:config:removal-reason-id',
+  schedulerLock: 'vg:config:digest-scheduled',
   statsProcessed: 'vg:stats:total-processed',
   statsAutoRemoved: 'vg:stats:auto-removed',
   statsPending: 'vg:stats:pending-review',
@@ -120,4 +121,13 @@ export async function incrementAuthorViolations(authorName: string): Promise<num
 export async function getAuthorViolationCount(authorName: string): Promise<number> {
   const val = await redis.get(KEYS.authorViolations(authorName));
   return val ? parseInt(val, 10) : 0;
+}
+
+export async function getSchedulerLock(): Promise<boolean> {
+  const val = await redis.get(KEYS.schedulerLock);
+  return val === '1';
+}
+
+export async function setSchedulerLock(): Promise<void> {
+  await redis.set(KEYS.schedulerLock, '1');
 }
