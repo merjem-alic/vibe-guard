@@ -6,10 +6,12 @@ export const KEYS = {
   statsAutoRemoved: 'vg:stats:auto-removed',
   statsPending: 'vg:stats:pending-review',
   flaggedIndex: 'vg:flagged:index',
-  flaggedItem: (commentId: string) => `vg:flagged:item:${commentId}`,
+  flaggedItem: (id: string) => `vg:flagged:item:${id}`,
+  authorViolations: (name: string) => `vg:user-violations:${name}`,
+  statsDailyProcessed: (date: string) => `vg:stats:processed:${date}`,
 } as const;
 
-export type FlaggedItemStatus = 'pending' | 'auto-removed' | 'restored' | 'confirmed';
+export type FlaggedItemStatus = 'pending' | 'auto-removed' | 'restored' | 'confirmed' | 'deleted';
 
 export type FlaggedItem = {
   commentId: string;
@@ -21,6 +23,7 @@ export type FlaggedItem = {
   tier: string;
   status: FlaggedItemStatus;
   flaggedAt: string;
+  contentType?: 'comment' | 'post';
 };
 
 export async function storeFlaggedItem(item: FlaggedItem): Promise<void> {
@@ -36,20 +39,21 @@ export async function storeFlaggedItem(item: FlaggedItem): Promise<void> {
       tier: item.tier,
       status: item.status,
       flaggedAt: item.flaggedAt,
+      contentType: item.contentType ?? 'comment',
     }),
     redis.zAdd(KEYS.flaggedIndex, { member: item.commentId, score: now }),
   ]);
 }
 
 export async function updateFlaggedStatus(
-  commentId: string,
+  id: string,
   status: FlaggedItemStatus,
 ): Promise<void> {
-  await redis.hSet(KEYS.flaggedItem(commentId), { status });
+  await redis.hSet(KEYS.flaggedItem(id), { status });
 }
 
-export async function getFlaggedItem(commentId: string): Promise<FlaggedItem | undefined> {
-  const data = await redis.hGetAll(KEYS.flaggedItem(commentId));
+export async function getFlaggedItem(id: string): Promise<FlaggedItem | undefined> {
+  const data = await redis.hGetAll(KEYS.flaggedItem(id));
   if (!data || !data['commentId']) return undefined;
   return data as unknown as FlaggedItem;
 }
@@ -81,7 +85,15 @@ export async function getStats(): Promise<{
 }
 
 export async function incrementStat(key: 'statsProcessed' | 'statsAutoRemoved'): Promise<void> {
-  await redis.incrBy(KEYS[key], 1);
+  const today = new Date().toISOString().split('T')[0]!;
+  if (key === 'statsProcessed') {
+    await Promise.all([
+      redis.incrBy(KEYS[key], 1),
+      redis.incrBy(KEYS.statsDailyProcessed(today), 1),
+    ]);
+  } else {
+    await redis.incrBy(KEYS[key], 1);
+  }
 }
 
 export async function adjustPendingCount(delta: number): Promise<void> {
@@ -94,4 +106,18 @@ export async function setRemovalReasonId(id: string): Promise<void> {
 
 export async function getRemovalReasonId(): Promise<string | undefined> {
   return (await redis.get(KEYS.removalReasonId)) ?? undefined;
+}
+
+export async function getDailyStats(date: string): Promise<number> {
+  const val = await redis.get(KEYS.statsDailyProcessed(date));
+  return val ? parseInt(val, 10) : 0;
+}
+
+export async function incrementAuthorViolations(authorName: string): Promise<number> {
+  return redis.incrBy(KEYS.authorViolations(authorName), 1);
+}
+
+export async function getAuthorViolationCount(authorName: string): Promise<number> {
+  const val = await redis.get(KEYS.authorViolations(authorName));
+  return val ? parseInt(val, 10) : 0;
 }

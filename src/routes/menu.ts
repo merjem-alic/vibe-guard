@@ -118,3 +118,27 @@ menu.post('/vg-restore-comment', async (c) => {
     },
   });
 });
+
+menu.post('/vg-confirm-removal', async (c) => {
+  const request = await c.req.json<MenuItemRequest>();
+  return c.json<UiResponse>({
+    showForm: {
+      name: 'vgConfirmRemoval',
+      form: {
+        title: 'Vibe Guard: Confirm Removal',
+        description: 'Confirm this comment should be removed and close it from the review queue?',
+        fields: [
+          {
+            name: 'commentId',
+            label: 'Comment ID',
+            type: 'string',
+            defaultValue: request.targetId,
+            required: true,
+          },
+        ],
+        acceptLabel: 'Confirm Removal',
+        cancelLabel: 'Cancel',
+      },
+    },
+  });
+});

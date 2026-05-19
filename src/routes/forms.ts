@@ -8,6 +8,7 @@ import {
   getRecentFlaggedItems,
   updateFlaggedStatus,
   adjustPendingCount,
+  getFlaggedItem,
 } from '../core/flaggedStore';
 
 type NukeFormValues = {
@@ -225,5 +226,48 @@ forms.post('/vg-restore-comment-submit', async (c) => {
   } catch (err) {
     console.error('[Vibe Guard] Restore comment error:', err);
     return c.json<UiResponse>({ showToast: 'Failed to restore comment. Please try again.' });
+  }
+});
+
+forms.post('/vg-confirm-removal-submit', async (c) => {
+  const values = await c.req.json<{ commentId?: string }>();
+  const commentId = values.commentId?.trim();
+
+  if (!commentId || !isT1(commentId)) {
+    return c.json<UiResponse>({ showToast: 'Invalid comment ID.' });
+  }
+
+  try {
+    const flaggedItem = await getFlaggedItem(commentId);
+    if (!flaggedItem) {
+      return c.json<UiResponse>({ showToast: 'Comment not found in review queue.' });
+    }
+    if (flaggedItem.status !== 'pending') {
+      return c.json<UiResponse>({
+        showToast: `Cannot confirm: comment status is already "${flaggedItem.status}".`,
+      });
+    }
+
+    const redditComment = await reddit.getCommentById(commentId as `t1_${string}`);
+    await redditComment.remove();
+    await updateFlaggedStatus(commentId, 'confirmed');
+    await adjustPendingCount(-1);
+
+    const subredditId = context.subredditId;
+    if (subredditId && flaggedItem.authorName) {
+      await reddit.addModNote({
+        subreddit: context.subredditName,
+        user: flaggedItem.authorName,
+        note: `Vibe Guard: mod confirmed removal of flagged ${flaggedItem.category} comment`,
+        label: 'SPAM_WARNING',
+        redditId: commentId as `t1_${string}`,
+      });
+    }
+
+    console.log(`[Vibe Guard] Comment ${commentId} confirmed removal by mod u/${context.userId}`);
+    return c.json<UiResponse>({ showToast: 'Comment confirmed and removed.' });
+  } catch (err) {
+    console.error('[Vibe Guard] Confirm removal error:', err);
+    return c.json<UiResponse>({ showToast: 'Failed to confirm removal. Please try again.' });
   }
 });

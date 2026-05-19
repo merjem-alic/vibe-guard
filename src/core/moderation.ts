@@ -8,7 +8,7 @@ export type TierResult = {
   score: number;
 };
 
-const AUTO_REMOVE_CATEGORIES: ReadonlySet<keyof Moderation.CategoryScores> = new Set([
+export const DEFAULT_AUTO_REMOVE_CATEGORIES: ReadonlySet<string> = new Set([
   'sexual/minors',
   'hate/threatening',
   'violence/graphic',
@@ -16,13 +16,19 @@ const AUTO_REMOVE_CATEGORIES: ReadonlySet<keyof Moderation.CategoryScores> = new
   'self-harm/intent',
 ]);
 
+export function parseCategories(csv: string | undefined, fallback: ReadonlySet<string>): ReadonlySet<string> {
+  if (!csv?.trim()) return fallback;
+  return new Set(csv.split(',').map((s) => s.trim()).filter(Boolean));
+}
+
 export function classifyModerationResult(
   result: Moderation,
   autoRemoveThreshold: number,
   flagReviewThreshold: number,
+  autoRemoveCategories: ReadonlySet<string> = DEFAULT_AUTO_REMOVE_CATEGORIES,
 ): TierResult {
-  for (const cat of AUTO_REMOVE_CATEGORIES) {
-    const score = result.category_scores[cat] ?? 0;
+  for (const cat of autoRemoveCategories) {
+    const score = (result.category_scores as unknown as Record<string, number>)[cat] ?? 0;
     if (score > autoRemoveThreshold) {
       return { tier: 'AUTO_REMOVE', triggerCategory: cat, score };
     }
