@@ -7,7 +7,7 @@ import type {
   OnCommentDeleteRequest,
   TriggerResponse,
 } from '@devvit/web/shared';
-import { settings, reddit, scheduler } from '@devvit/web/server';
+import { settings, reddit, scheduler, context } from '@devvit/web/server';
 import OpenAI from 'openai';
 import { classifyModerationResult, parseCategories, DEFAULT_AUTO_REMOVE_CATEGORIES } from '../core/moderation';
 import {
@@ -19,6 +19,8 @@ import {
   getFlaggedItem,
   updateFlaggedStatus,
   incrementAuthorViolations,
+  getDailyStats,
+  getStats,
 } from '../core/flaggedStore';
 
 export const triggers = new Hono();
@@ -416,6 +418,48 @@ triggers.post('/on-comment-delete', async (c) => {
   }
 
   return c.json<TriggerResponse>({ status: 'ok' });
+});
+
+triggers.post('/weekly-digest', async (c) => {
+  console.log('[Vibe Guard] Weekly digest firing');
+
+  try {
+    const today = new Date();
+    const lines: string[] = ['**Vibe Guard Weekly Digest**', ''];
+
+    let totalThisWeek = 0;
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const dateKey = d.toISOString().split('T')[0]!;
+      const count = await getDailyStats(dateKey);
+      totalThisWeek += count;
+      lines.push(`${dateKey}: ${count} items screened`);
+    }
+
+    const { autoRemoved, pending } = await getStats();
+
+    lines.push('');
+    lines.push(`**This week:** ${totalThisWeek} items screened`);
+    lines.push(`**All-time auto-removed:** ${autoRemoved}`);
+    lines.push(`**Currently pending review:** ${pending}`);
+
+    const subredditId = context.subredditId;
+    if (subredditId) {
+      await reddit.modMail.createModInboxConversation({
+        subject: '[Vibe Guard] Weekly Digest',
+        bodyMarkdown: lines.join('\n'),
+        subredditId,
+      });
+      console.log('[Vibe Guard] Weekly digest sent');
+    } else {
+      console.warn('[Vibe Guard] Weekly digest: no subreddit ID in context, skipping modmail');
+    }
+  } catch (err) {
+    console.error('[Vibe Guard] Weekly digest error:', err);
+  }
+
+  return c.json({});
 });
 
 async function sendModmail(

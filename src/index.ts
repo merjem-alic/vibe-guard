@@ -6,7 +6,6 @@ import { forms } from './routes/forms';
 import { menu } from './routes/menu';
 import { triggers } from './routes/triggers';
 import { Devvit } from '@devvit/public-api';
-import { KEYS } from './core/flaggedStore';
 
 Devvit.addSettings([
   {
@@ -46,42 +45,6 @@ Devvit.addSettings([
   },
 ]);
 
-Devvit.addSchedulerJob({
-  name: 'weekly-digest',
-  onRun: async (_event, context) => {
-    const today = new Date();
-    const lines: string[] = ['**Vibe Guard Weekly Digest**', ''];
-
-    let totalThisWeek = 0;
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const dateKey = d.toISOString().split('T')[0]!;
-      const val = await context.redis.get(KEYS.statsDailyProcessed(dateKey));
-      const count = val ? parseInt(val, 10) : 0;
-      totalThisWeek += count;
-      lines.push(`${dateKey}: ${count} comments processed`);
-    }
-
-    const autoRemovedStr = await context.redis.get(KEYS.statsAutoRemoved);
-    const pendingStr = await context.redis.get(KEYS.statsPending);
-
-    lines.push('');
-    lines.push(`**This week:** ${totalThisWeek} comments screened`);
-    lines.push(`**All-time auto-removed:** ${autoRemovedStr ?? '0'}`);
-    lines.push(`**Currently pending review:** ${pendingStr ?? '0'}`);
-
-    const subredditId = context.subredditId;
-    if (subredditId) {
-      await context.reddit.modMail.createModInboxConversation({
-        subject: '[Vibe Guard] Weekly Digest',
-        bodyMarkdown: lines.join('\n'),
-        subredditId,
-      });
-      console.log('[Vibe Guard] Weekly digest sent');
-    }
-  },
-});
 
 const app = new Hono();
 const internal = new Hono();

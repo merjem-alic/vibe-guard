@@ -1,31 +1,41 @@
 # Vibe Guard
 
-An AI-powered Reddit moderation tool built with [Devvit](https://developers.reddit.com/), [Hono](https://hono.dev/), and [OpenAI](https://platform.openai.com/docs/guides/moderation). Vibe Guard automatically screens comments for toxic content and gives moderators a full review workflow — all inside Reddit's native UI.
+An AI-powered Reddit moderation tool built with [Devvit](https://developers.reddit.com/), [Hono](https://hono.dev/), and [OpenAI](https://platform.openai.com/docs/guides/moderation). Vibe Guard automatically screens comments and posts for toxic content and gives moderators a complete review and action workflow — all inside Reddit's native UI.
 
 ## Features
 
 ### Automatic AI Moderation
-- Every new comment is evaluated by OpenAI's `omni-moderation-latest` model in real time
+- Every new **comment** and **post** is evaluated by OpenAI's `omni-moderation-latest` model in real time
 - **Tiered response system** based on category confidence scores:
   - **Auto-Remove** (score > 0.7): `sexual/minors`, `hate/threatening`, `violence/graphic`, `self-harm/instructions`, `self-harm/intent` — removed instantly
-  - **Flag for Review** (score > 0.5): all other flagged categories — comment stays up, mods alerted
+  - **Flag for Review** (score > 0.5): all other flagged categories — content stays up, mods alerted
   - **Ignore**: everything below threshold — no action taken
-- Removed comments automatically receive a subreddit removal reason and a mod note on the author's account
-- Modmail notification sent to the mod team for every auto-removal and flag, including the comment text, category, and confidence score
+- Categories and thresholds are fully configurable per-subreddit via app settings
+- **Report-triggered re-screening**: when a user reports a comment, it is re-evaluated by OpenAI and escalated to auto-remove if warranted
+- **Repeat offender detection**: authors with 3+ violations get an escalating mod note (`[REPEAT OFFENDER ×N]`) attached to each action
+- Removed content automatically receives a subreddit removal reason and a mod note on the author's account
+- Modmail notification sent to the mod team for every auto-removal and flag, including author, category, confidence score, and a direct permalink
 
 ### Manual Moderation Tools
 - **Mop comment** — remove and/or lock a comment and all its replies in one click
 - **Mop post** — remove and/or lock every comment on a post at once
-- **Restore comment** — approve a Vibe Guard–removed comment directly from the comment context menu
+- **Restore Comment** — approve a Vibe Guard–flagged comment directly from the comment context menu
+- **Confirm Removal** — mod confirms a FLAG_FOR_REVIEW comment should be removed, closing it from the queue
 
 ### Mod Dashboard (native Reddit UI)
-- **Review Queue** — accessible from any post; shows total processed / auto-removed / pending counts and the last 5 flagged items with full context
-- **Settings** — view current threshold configuration without leaving Reddit
+- **Review Queue** — accessible from any post; shows total processed / auto-removed / pending counts and the last 5 flagged items with full context (author, category, confidence, status, body snippet, permalink)
+- **Settings** — view current threshold and category configuration without leaving Reddit
 
 ### Persistence & Auditability
-- All flagged items stored in Redis with full metadata: author, comment body, category, confidence score, tier, status, permalink, and timestamp
-- Status lifecycle tracked: `pending` → `auto-removed` → `restored` / `confirmed`
-- Running counters for processed, auto-removed, and pending items
+- All flagged items stored in Redis with full metadata: author, body, category, score, tier, status, content type, permalink, and timestamp
+- Status lifecycle: `pending` → `auto-removed` / `restored` / `confirmed` / `deleted`
+- Daily processed counters (`vg:stats:processed:YYYY-MM-DD`) enable weekly rollup reporting
+- Per-author violation counts tracked for repeat offender escalation
+- Running counters for total processed, auto-removed, and pending items
+
+### Reporting
+- **Weekly digest** scheduled every Monday at 9am UTC — posts a modmail summary of the past 7 days of activity, all-time auto-remove count, and current pending queue depth
+- **Debug endpoint** (`GET /api/debug/stats`) returns live stats and the 10 most recent flagged items as JSON — useful during development
 
 ## Tech Stack
 
@@ -34,9 +44,9 @@ An AI-powered Reddit moderation tool built with [Devvit](https://developers.redd
 | Platform | [Devvit](https://developers.reddit.com/) 0.12.x |
 | Server | [Hono](https://hono.dev/) + `@hono/node-server` |
 | Build | [Vite](https://vite.dev/) with `@devvit/start/vite` |
-| AI | [OpenAI](https://platform.openai.com/) Moderation API |
-| Storage | Devvit Redis (`@devvit/redis`) |
-| Language | TypeScript (strict mode) |
+| AI | [OpenAI](https://platform.openai.com/) Moderation API (`omni-moderation-latest`) |
+| Storage | Devvit Redis |
+| Language | TypeScript |
 
 ## Project Structure
 
@@ -45,13 +55,17 @@ src/
 ├── index.ts              # Server entry — Hono app, Devvit settings registration
 ├── core/
 │   ├── moderation.ts     # Pure classification logic (AUTO_REMOVE / FLAG_FOR_REVIEW / IGNORE)
-│   ├── flaggedStore.ts   # Redis persistence layer — flagged items, counters, config
+│   ├── moderation.test.ts# Unit tests for classification and category parsing
+│   ├── flaggedStore.ts   # Redis persistence — flagged items, counters, daily stats, author violations
 │   └── nuke.ts           # Bulk comment remove/lock operations
 └── routes/
-    ├── triggers.ts       # Event handlers: onAppInstall, onCommentSubmit
+    ├── triggers.ts       # Event handlers: onAppInstall, onCommentSubmit, onPostSubmit,
+    │                     #   onCommentReport, onCommentDelete, weekly-digest scheduler
     ├── menu.ts           # Context menu item handlers
     ├── forms.ts          # Form submission handlers
-    └── api.ts            # Public API endpoints
+    └── api.ts            # Public API endpoints (debug/stats)
+scripts/
+└── seed-test-comments.mjs  # Dev testing: posts comments from two alt accounts via snoowrap
 ```
 
 ## Getting Started
@@ -98,7 +112,7 @@ src/
 | `npm run build` | Production build |
 | `npm run type-check` | TypeScript type checking |
 | `npm run lint` | ESLint |
-| `npm run test` | Run tests |
+| `npm run test` | Run unit tests (vitest) |
 | `npm run deploy` | Type-check + lint + test + upload to Reddit |
 | `npm run launch` | Deploy + submit for Reddit app review |
 
@@ -109,18 +123,44 @@ After deploying, subreddit moderators can configure Vibe Guard from the subreddi
 | Setting | Default | Description |
 |---|---|---|
 | OpenAI API Key | — | Required. Set once at the app level, shared across all installations. |
-| Auto-Remove Threshold | `0.7` | Confidence score above which a comment in a critical category is auto-removed. |
-| Flag-for-Review Threshold | `0.5` | Confidence score above which any flagged comment is queued for mod review. |
+| Auto-Remove Threshold | `0.7` | Confidence score above which content in a critical category is auto-removed. |
+| Flag-for-Review Threshold | `0.5` | Confidence score above which any flagged content is queued for mod review. |
 | Modmail Notifications | `true` | Send a modmail to the mod team on every auto-removal and flag. |
+| Auto-Remove Categories | `sexual/minors,...` | Comma-separated list of OpenAI categories that trigger auto-removal. Overrides the default set. |
 
 ## How It Works
 
-1. A comment is posted in the subreddit
-2. Devvit fires `onCommentSubmit` → Vibe Guard calls the OpenAI Moderation API
+### Comment / Post Flow
+1. Content is submitted to the subreddit
+2. Devvit fires `onCommentSubmit` or `onPostSubmit` → Vibe Guard calls the OpenAI Moderation API
 3. The result is classified into AUTO_REMOVE, FLAG_FOR_REVIEW, or IGNORE
-4. **AUTO_REMOVE**: comment is removed, a removal reason is attached, a mod note is added to the author's account, and a modmail is sent to the mod team
-5. **FLAG_FOR_REVIEW**: the comment stays visible, but is stored in the review queue and a modmail alert is sent
-6. Mods can use the **Review Queue** menu item on any post to see pending items, or click **Restore Comment** on a specific comment to approve it
+4. **AUTO_REMOVE**: content is removed, a removal reason is attached, a mod note is added to the author's account (with repeat offender escalation if applicable), and a modmail is sent
+5. **FLAG_FOR_REVIEW**: content stays visible, stored in the review queue, modmail alert sent
+6. Mods can use **Confirm Removal** on a specific comment to confirm the AI's decision, or **Restore Comment** to approve it
+
+### Report Flow
+1. A user reports a comment
+2. `onCommentReport` fires → Vibe Guard re-screens the comment through OpenAI
+3. If the re-screen returns AUTO_REMOVE and it wasn't already removed, it is removed and the queue updated
+
+### Delete Flow
+1. A user deletes their own comment
+2. `onCommentDelete` fires → if the comment was pending review, the pending counter is decremented automatically (prevents drift)
+
+## Testing
+
+### Unit Tests
+```bash
+npm run test
+```
+Tests cover `classifyModerationResult` and `parseCategories` across all decision branches.
+
+### Integration Testing with Alt Accounts
+```bash
+# Set env vars, then:
+node scripts/seed-test-comments.mjs
+```
+The seeder posts 7 comments (3 IGNORE, 2 FLAG_FOR_REVIEW, 2 AUTO_REMOVE) from two test accounts to a target post. See the script header for full setup instructions.
 
 ## Deployment
 
