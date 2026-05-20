@@ -57,6 +57,14 @@ Devvit.addSettings([
     scope: 'installation',
     defaultValue: '',
   },
+  {
+    name: 'moderation-fail-mode',
+    label: 'Moderation Failure Mode ("fail-open" or "fail-closed")',
+    helpText: 'fail-open: let content through silently when AI is unreachable. fail-closed: flag it for mod review.',
+    type: 'string',
+    scope: 'installation',
+    defaultValue: 'fail-open',
+  },
 ]);
 
 

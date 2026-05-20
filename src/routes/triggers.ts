@@ -9,7 +9,7 @@ import type {
 } from '@devvit/web/shared';
 import { settings, reddit, scheduler, context } from '@devvit/web/server';
 import OpenAI from 'openai';
-import { classifyModerationResult, parseCategories, DEFAULT_AUTO_REMOVE_CATEGORIES } from '../core/moderation';
+import { classifyModerationResult, parseCategories, DEFAULT_AUTO_REMOVE_CATEGORIES, callWithRetry } from '../core/moderation';
 import {
   storeFlaggedItem,
   incrementStat,
@@ -82,7 +82,7 @@ triggers.post('/on-comment-create', async (c) => {
   console.log(`[Vibe Guard] Evaluating comment ${comment.id} from u/${comment.author}`);
 
   try {
-    const [apiKey, autoRemoveThreshold, flagReviewThreshold, notifyModmail, autoRemoveCategoriesCsv, trustedUsersCsv, isDryRun] =
+    const [apiKey, autoRemoveThreshold, flagReviewThreshold, notifyModmail, autoRemoveCategoriesCsv, trustedUsersCsv, isDryRun, failModeRaw] =
       await Promise.all([
         settings.get<string>('open-ai-api-key'),
         settings.get<number>('auto-remove-threshold'),
@@ -91,6 +91,7 @@ triggers.post('/on-comment-create', async (c) => {
         settings.get<string>('auto-remove-categories'),
         settings.get<string>('trusted-users'),
         settings.get<boolean>('dry-run-mode'),
+        settings.get<string>('moderation-fail-mode'),
       ]);
 
     // Trusted user bypass
@@ -111,10 +112,31 @@ triggers.post('/on-comment-create', async (c) => {
     const autoRemoveCategories = parseCategories(autoRemoveCategoriesCsv, DEFAULT_AUTO_REMOVE_CATEGORIES);
 
     const openai = new OpenAI({ apiKey: resolvedApiKey });
-    const moderation = await openai.moderations.create({
-      model: 'omni-moderation-latest',
-      input: comment.body,
-    });
+
+    let moderation;
+    try {
+      moderation = await callWithRetry(() =>
+        openai.moderations.create({ model: 'omni-moderation-latest', input: comment.body })
+      );
+    } catch (apiErr) {
+      console.error('[Vibe Guard] OpenAI API failed after retries:', apiErr);
+      if ((failModeRaw ?? 'fail-open') === 'fail-closed') {
+        await storeFlaggedItem({
+          commentId: comment.id,
+          authorName: comment.author,
+          body: comment.body,
+          permalink: comment.permalink,
+          category: 'api-error',
+          score: '0',
+          tier: 'FLAG_FOR_REVIEW',
+          status: 'pending',
+          flaggedAt: new Date().toISOString(),
+          contentType: 'comment',
+        });
+        await adjustPendingCount(1);
+      }
+      return c.json<TriggerResponse>({ status: 'ok' });
+    }
 
     const result = moderation.results[0];
     if (!result) {
@@ -225,7 +247,7 @@ triggers.post('/on-post-submit', async (c) => {
   console.log(`[Vibe Guard] Evaluating post ${post.id} by u/${input.author?.name}`);
 
   try {
-    const [apiKey, autoRemoveThreshold, flagReviewThreshold, notifyModmail, autoRemoveCategoriesCsv, trustedUsersCsv, isDryRun] =
+    const [apiKey, autoRemoveThreshold, flagReviewThreshold, notifyModmail, autoRemoveCategoriesCsv, trustedUsersCsv, isDryRun, failModeRaw] =
       await Promise.all([
         settings.get<string>('open-ai-api-key'),
         settings.get<number>('auto-remove-threshold'),
@@ -234,6 +256,7 @@ triggers.post('/on-post-submit', async (c) => {
         settings.get<string>('auto-remove-categories'),
         settings.get<string>('trusted-users'),
         settings.get<boolean>('dry-run-mode'),
+        settings.get<string>('moderation-fail-mode'),
       ]);
 
     // Trusted user bypass
@@ -255,10 +278,31 @@ triggers.post('/on-post-submit', async (c) => {
     const autoRemoveCategories = parseCategories(autoRemoveCategoriesCsv, DEFAULT_AUTO_REMOVE_CATEGORIES);
 
     const openai = new OpenAI({ apiKey: resolvedApiKey });
-    const moderation = await openai.moderations.create({
-      model: 'omni-moderation-latest',
-      input: textToScreen,
-    });
+
+    let moderation;
+    try {
+      moderation = await callWithRetry(() =>
+        openai.moderations.create({ model: 'omni-moderation-latest', input: textToScreen })
+      );
+    } catch (apiErr) {
+      console.error('[Vibe Guard] OpenAI API failed after retries:', apiErr);
+      if ((failModeRaw ?? 'fail-open') === 'fail-closed') {
+        await storeFlaggedItem({
+          commentId: post.id,
+          authorName,
+          body: textToScreen,
+          permalink: post.permalink,
+          category: 'api-error',
+          score: '0',
+          tier: 'FLAG_FOR_REVIEW',
+          status: 'pending',
+          flaggedAt: new Date().toISOString(),
+          contentType: 'post',
+        });
+        await adjustPendingCount(1);
+      }
+      return c.json<TriggerResponse>({ status: 'ok' });
+    }
 
     const result = moderation.results[0];
     if (!result) return c.json<TriggerResponse>({ status: 'ok' });
@@ -369,10 +413,15 @@ triggers.post('/on-comment-report', async (c) => {
     const autoRemoveCategories = parseCategories(autoRemoveCategoriesCsv, DEFAULT_AUTO_REMOVE_CATEGORIES);
 
     const openai = new OpenAI({ apiKey: resolvedApiKey });
-    const moderation = await openai.moderations.create({
-      model: 'omni-moderation-latest',
-      input: comment.body,
-    });
+    let moderation;
+    try {
+      moderation = await callWithRetry(() =>
+        openai.moderations.create({ model: 'omni-moderation-latest', input: comment.body })
+      );
+    } catch (apiErr) {
+      console.error('[Vibe Guard] OpenAI API failed for reported comment:', apiErr);
+      return c.json<TriggerResponse>({ status: 'ok' });
+    }
 
     const result = moderation.results[0];
     if (!result) return c.json<TriggerResponse>({ status: 'ok' });

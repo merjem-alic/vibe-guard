@@ -12,7 +12,7 @@ export const KEYS = {
   statsDailyProcessed: (date: string) => `vg:stats:processed:${date}`,
 } as const;
 
-export type FlaggedItemStatus = 'pending' | 'auto-removed' | 'restored' | 'confirmed' | 'deleted';
+export type FlaggedItemStatus = 'pending' | 'auto-removed' | 'restored' | 'confirmed' | 'deleted' | 'dismissed';
 
 export type FlaggedItem = {
   commentId: string;

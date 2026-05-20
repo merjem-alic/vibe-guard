@@ -119,6 +119,30 @@ menu.post('/vg-restore-comment', async (c) => {
   });
 });
 
+menu.post('/vg-dismiss-item', async (c) => {
+  const request = await c.req.json<MenuItemRequest>();
+  return c.json<UiResponse>({
+    showForm: {
+      name: 'vgDismissItem',
+      form: {
+        title: 'Vibe Guard: Dismiss Item',
+        description: 'Mark this item as reviewed and dismiss it from the queue without removing it.',
+        fields: [
+          {
+            name: 'commentId',
+            label: 'Content ID',
+            type: 'string',
+            defaultValue: request.targetId,
+            required: true,
+          },
+        ],
+        acceptLabel: 'Dismiss',
+        cancelLabel: 'Cancel',
+      },
+    },
+  });
+});
+
 menu.post('/vg-confirm-removal', async (c) => {
   const request = await c.req.json<MenuItemRequest>();
   return c.json<UiResponse>({

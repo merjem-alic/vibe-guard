@@ -123,7 +123,7 @@ forms.post('/mop-post-submit', async (c) => {
 
 forms.post('/vg-review-queue-submit', async (c) => {
   try {
-    const [stats, recentItems] = await Promise.all([getStats(), getRecentFlaggedItems(5)]);
+    const [stats, recentItems] = await Promise.all([getStats(), getRecentFlaggedItems(10)]);
 
     const itemLines =
       recentItems.length === 0
@@ -140,7 +140,7 @@ forms.post('/vg-review-queue-submit', async (c) => {
     const queueText = [
       `Processed: ${stats.processed} | Auto-removed: ${stats.autoRemoved} | Pending: ${stats.pending}`,
       '',
-      'Last 5 flagged items:',
+      'Last 10 flagged items:',
       ...itemLines,
     ].join('\n');
 
@@ -170,16 +170,41 @@ forms.post('/vg-review-queue-submit', async (c) => {
 
 forms.post('/vg-settings-submit', async (c) => {
   try {
-    const [autoThreshold, flagThreshold, notifyMail] = await Promise.all([
-      settings.get<number>('auto-remove-threshold'),
-      settings.get<number>('flag-review-threshold'),
-      settings.get<boolean>('notify-modmail'),
-    ]);
+    const [autoThreshold, flagThreshold, notifyMail, isDryRun, failMode, stats, recentItems] =
+      await Promise.all([
+        settings.get<number>('auto-remove-threshold'),
+        settings.get<number>('flag-review-threshold'),
+        settings.get<boolean>('notify-modmail'),
+        settings.get<boolean>('dry-run-mode'),
+        settings.get<string>('moderation-fail-mode'),
+        getStats(),
+        getRecentFlaggedItems(20),
+      ]);
+
+    // Category breakdown from recent items
+    const catCounts: Record<string, number> = {};
+    for (const item of recentItems) {
+      catCounts[item.category] = (catCounts[item.category] ?? 0) + 1;
+    }
+    const categoryLines =
+      Object.keys(catCounts).length === 0
+        ? '  (no data yet)'
+        : Object.entries(catCounts)
+            .sort(([, a], [, b]) => b - a)
+            .map(([cat, count]) => `  ${cat}: ${count}`)
+            .join('\n');
 
     const settingsText = [
       `Auto-Remove Threshold: ${autoThreshold ?? 0.7}`,
       `Flag-for-Review Threshold: ${flagThreshold ?? 0.5}`,
       `Modmail Notifications: ${notifyMail !== false ? 'Enabled' : 'Disabled'}`,
+      `Dry-Run Mode: ${isDryRun ? 'ON' : 'off'}`,
+      `Failure Mode: ${failMode ?? 'fail-open'}`,
+      '',
+      `Stats: ${stats.processed} processed | ${stats.autoRemoved} removed | ${stats.pending} pending`,
+      '',
+      'Recent category breakdown (last 20 items):',
+      categoryLines,
       '',
       'Change these in the subreddit app settings panel.',
     ].join('\n');
@@ -205,6 +230,36 @@ forms.post('/vg-settings-submit', async (c) => {
   } catch (err) {
     console.error('[Vibe Guard] Settings display error:', err);
     return c.json<UiResponse>({ showToast: 'Failed to load settings.' });
+  }
+});
+
+forms.post('/vg-dismiss-item-submit', async (c) => {
+  const values = await c.req.json<{ commentId?: string }>();
+  const commentId = values.commentId?.trim();
+
+  if (!commentId || (!isT1(commentId) && !isT3(commentId))) {
+    return c.json<UiResponse>({ showToast: 'Invalid content ID.' });
+  }
+
+  try {
+    const flaggedItem = await getFlaggedItem(commentId);
+    if (!flaggedItem) {
+      return c.json<UiResponse>({ showToast: 'Item not found in review queue.' });
+    }
+    if (flaggedItem.status !== 'pending') {
+      return c.json<UiResponse>({
+        showToast: `Cannot dismiss: status is already "${flaggedItem.status}".`,
+      });
+    }
+
+    await updateFlaggedStatus(commentId, 'dismissed');
+    await adjustPendingCount(-1);
+
+    console.log(`[Vibe Guard] Item ${commentId} dismissed by mod u/${context.userId}`);
+    return c.json<UiResponse>({ showToast: 'Item dismissed and removed from queue.' });
+  } catch (err) {
+    console.error('[Vibe Guard] Dismiss error:', err);
+    return c.json<UiResponse>({ showToast: 'Failed to dismiss. Please try again.' });
   }
 });
 

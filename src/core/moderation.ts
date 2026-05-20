@@ -1,5 +1,26 @@
 import type { Moderation } from 'openai/resources/moderations.js';
 
+export async function callWithRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 3,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      const status = (err as { status?: number })?.status;
+      // Non-transient client errors: bail immediately
+      if (status && status >= 400 && status < 500 && status !== 429) throw err;
+      if (attempt < maxAttempts - 1) {
+        await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+      }
+    }
+  }
+  throw lastError;
+}
+
 export type ModerationTier = 'AUTO_REMOVE' | 'FLAG_FOR_REVIEW' | 'IGNORE';
 
 export type TierResult = {

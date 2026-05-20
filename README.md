@@ -15,24 +15,27 @@ An AI-powered Reddit moderation tool built with [Devvit](https://developers.redd
 - **Repeat offender detection**: authors with 3+ violations get an escalating mod note (`[REPEAT OFFENDER ×N]`) attached to each action
 - Removed content automatically receives a subreddit removal reason and a mod note on the author's account
 - Modmail notification sent to the mod team for every auto-removal and flag, including author, category, confidence score, and a direct permalink
+- **API failure handling**: all OpenAI calls retry up to 3 times (1s/2s/4s backoff) on transient errors; configurable fail-open or fail-closed behaviour when the API is unreachable
 
 ### Manual Moderation Tools
 - **Mop comment** — remove and/or lock a comment and all its replies in one click
 - **Mop post** — remove and/or lock every comment on a post at once
 - **Restore** — approve a Vibe Guard–flagged comment or post directly from the review queue; works for both T1 and T3 IDs
 - **Confirm Removal** — mod confirms a FLAG_FOR_REVIEW comment or post should be removed; toast shows the author's total violation count
+- **Dismiss Item** — mark a pending item as reviewed and close it from the queue without removing the content
 
 ### Mod Dashboard (native Reddit UI)
-- **Review Queue** — accessible from any post; shows total processed / auto-removed / pending counts and the last 5 flagged items with full context (author, category, confidence, status, body snippet, permalink)
-- **Settings** — view current threshold and category configuration without leaving Reddit
+- **Review Queue** — accessible from any post; shows total processed / auto-removed / pending counts and the last 10 flagged items with full context (author, category, confidence, status, body snippet, permalink)
+- **Settings** — view current thresholds, dry-run / failure-mode flags, live stats, and a category breakdown of recent flagged items — without leaving Reddit
 
 ### Safe Deployment Features
 - **Dry-run mode** — when enabled, AUTO_REMOVE decisions are stored as pending in the queue (no content is actually removed); modmail is sent with a `[DRY RUN]` prefix so mods can calibrate thresholds against live traffic before enabling enforcement
 - **Trusted user allowlist** — comma-separated list of usernames that bypass all AI screening entirely; avoids false positives on established community members and moderators
+- **Fail-closed mode** — when OpenAI is unreachable after retries, content is automatically flagged for review instead of silently passing through
 
 ### Persistence & Auditability
 - All flagged items stored in Redis with full metadata: author, body, category, score, tier, status, content type, permalink, and timestamp
-- Status lifecycle: `pending` → `auto-removed` / `restored` / `confirmed` / `deleted`
+- Status lifecycle: `pending` → `auto-removed` / `restored` / `confirmed` / `deleted` / `dismissed`
 - Daily processed counters (`vg:stats:processed:YYYY-MM-DD`) enable weekly rollup reporting
 - Per-author violation counts tracked for repeat offender escalation
 - Running counters for total processed, auto-removed, and pending items
@@ -56,20 +59,23 @@ An AI-powered Reddit moderation tool built with [Devvit](https://developers.redd
 
 ```
 src/
-├── index.ts              # Server entry — Hono app, Devvit settings registration
+├── index.ts                  # Server entry — Hono app, Devvit settings registration
 ├── core/
-│   ├── moderation.ts     # Pure classification logic (AUTO_REMOVE / FLAG_FOR_REVIEW / IGNORE)
-│   ├── moderation.test.ts# Unit tests for classification and category parsing
-│   ├── flaggedStore.ts   # Redis persistence — flagged items, counters, daily stats, author violations
-│   └── nuke.ts           # Bulk comment remove/lock operations
+│   ├── moderation.ts         # Classification logic + callWithRetry helper
+│   ├── moderation.test.ts    # Unit tests: classification and category parsing
+│   ├── flaggedStore.ts       # Redis persistence — flagged items, counters, daily stats, author violations
+│   ├── flaggedStore.test.ts  # Unit tests: all Redis store functions
+│   ├── nuke.ts               # Bulk comment remove/lock operations
+│   └── nuke.test.ts          # Unit tests: handleNuke and handleNukePost
 └── routes/
-    ├── triggers.ts       # Event handlers: onAppInstall, onCommentSubmit, onPostSubmit,
-    │                     #   onCommentReport, onCommentDelete, weekly-digest scheduler
-    ├── menu.ts           # Context menu item handlers
-    ├── forms.ts          # Form submission handlers
-    └── api.ts            # Public API endpoints (debug/stats)
+    ├── triggers.ts           # Event handlers: onAppInstall, onCommentSubmit, onPostSubmit,
+    │                         #   onCommentReport, onCommentDelete, weekly-digest scheduler
+    ├── triggers.test.ts      # Unit tests: trigger decision paths (7 scenarios)
+    ├── menu.ts               # Context menu item handlers
+    ├── forms.ts              # Form submission handlers
+    └── api.ts                # Public API endpoints (debug/stats)
 scripts/
-└── seed-test-comments.mjs  # Dev testing: posts comments from two alt accounts via snoowrap
+└── seed-test-comments.mjs    # Dev testing: posts comments from two alt accounts via snoowrap
 ```
 
 ## Getting Started
@@ -133,16 +139,17 @@ After deploying, subreddit moderators can configure Vibe Guard from the subreddi
 | Auto-Remove Categories | `sexual/minors,...` | Comma-separated list of OpenAI categories that trigger auto-removal. Overrides the default set. |
 | Dry-Run Mode | `false` | When enabled, AUTO_REMOVE decisions are logged and queued for review but content is not removed. Use to calibrate thresholds before going live. |
 | Trusted Users | — | Comma-separated list of usernames that bypass AI screening entirely. |
+| Moderation Failure Mode | `fail-open` | `fail-open`: let content through silently if OpenAI is unreachable. `fail-closed`: flag it for mod review instead. |
 
 ## How It Works
 
 ### Comment / Post Flow
 1. Content is submitted to the subreddit
-2. Devvit fires `onCommentSubmit` or `onPostSubmit` → Vibe Guard calls the OpenAI Moderation API
+2. Devvit fires `onCommentSubmit` or `onPostSubmit` → Vibe Guard calls the OpenAI Moderation API (with up to 3 automatic retries on transient errors)
 3. The result is classified into AUTO_REMOVE, FLAG_FOR_REVIEW, or IGNORE
 4. **AUTO_REMOVE**: content is removed, a removal reason is attached, a mod note is added to the author's account (with repeat offender escalation if applicable), and a modmail is sent
 5. **FLAG_FOR_REVIEW**: content stays visible, stored in the review queue, modmail alert sent
-6. Mods can use **Confirm Removal** on a specific comment to confirm the AI's decision, or **Restore Comment** to approve it
+6. Mods can use **Confirm Removal** on a specific comment to confirm the AI's decision, **Restore Comment** to approve it, or **Dismiss Item** to close it from the queue without acting on the content
 
 ### Report Flow
 1. A user reports a comment
@@ -153,13 +160,26 @@ After deploying, subreddit moderators can configure Vibe Guard from the subreddi
 1. A user deletes their own comment
 2. `onCommentDelete` fires → if the comment was pending review, the pending counter is decremented automatically (prevents drift)
 
+### API Failure Flow
+1. OpenAI call fails (network error, 429, 5xx) → Vibe Guard retries up to 3 times with exponential backoff
+2. If all retries fail and **fail-open** (default): content passes through silently, error logged
+3. If all retries fail and **fail-closed**: content is stored as a `FLAG_FOR_REVIEW` item with `category: api-error` so mods can review it
+
 ## Testing
 
 ### Unit Tests
 ```bash
 npm run test
 ```
-Tests cover `classifyModerationResult` and `parseCategories` across all decision branches.
+
+39 tests across 4 files:
+
+| File | Tests | Covers |
+|---|---|---|
+| `core/moderation.test.ts` | 14 | Classification logic, category parsing |
+| `core/flaggedStore.test.ts` | 12 | Redis store functions, counters, violation tracking |
+| `core/nuke.test.ts` | 6 | Bulk remove/lock, permission checks, skipDistinguished |
+| `routes/triggers.test.ts` | 7 | IGNORE/FLAG/AUTO_REMOVE paths, trusted user bypass, fail-closed, dry-run |
 
 ### Integration Testing with Alt Accounts
 ```bash

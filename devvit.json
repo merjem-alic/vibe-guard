@@ -43,6 +43,13 @@
         "endpoint": "/internal/menu/vg-restore-comment"
       },
       {
+        "label": "Vibe Guard: Dismiss Item",
+        "description": "Mark this item as reviewed and dismiss it from the queue without removing the content.",
+        "location": "comment",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/vg-dismiss-item"
+      },
+      {
         "label": "Vibe Guard: Confirm Removal",
         "description": "Confirm this flagged comment should be removed and close it from the review queue.",
         "location": "comment",
@@ -56,6 +63,7 @@
     "mopPost": "/internal/form/mop-post-submit",
     "vgReviewQueue": "/internal/form/vg-review-queue-submit",
     "vgSettings": "/internal/form/vg-settings-submit",
+    "vgDismissItem": "/internal/form/vg-dismiss-item-submit",
     "vgRestoreComment": "/internal/form/vg-restore-comment-submit",
     "vgConfirmRemoval": "/internal/form/vg-confirm-removal-submit"
   },
