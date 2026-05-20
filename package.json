@@ -24,7 +24,7 @@
     "@hono/node-server": "^1.19.9",
     "devvit": "0.12.22",
     "hono": "4.11.7",
-    "openai": "^6.37.0"
+    "openai": "^6.38.0"
   },
   "devDependencies": {
     "@eslint/js": "9.39.2",
